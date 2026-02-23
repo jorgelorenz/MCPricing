@@ -1,5 +1,27 @@
 import numpy as np
 
+
+def discount_from_zero_curve(zero_curve, date):
+    if callable(zero_curve):
+        z = float(zero_curve(date))
+        return np.exp(-z * date)
+
+    if np.isscalar(zero_curve):
+        return np.exp(-float(zero_curve) * date)
+
+    if isinstance(zero_curve, dict):
+        ts = np.array(sorted(zero_curve.keys()), dtype=float)
+        zs = np.array([zero_curve[t] for t in ts], dtype=float)
+        z = float(np.interp(date, ts, zs))
+        return np.exp(-z * date)
+
+    arr = np.asarray(zero_curve, dtype=float)
+    if arr.ndim == 2 and arr.shape[1] == 2:
+        z = float(np.interp(date, arr[:, 0], arr[:, 1]))
+        return np.exp(-z * date)
+
+    raise ValueError("discount_curve must be callable, scalar, dict, or array-like with shape (n, 2)")
+
 class Matrix2D:
     """Fast 2D matrix with bilinear interpolation."""
 

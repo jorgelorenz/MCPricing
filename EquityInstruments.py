@@ -1,11 +1,10 @@
 from Instruments import EquityOption, OneStrikeOption
-from SimulatorEngine import BlackScholesSimulator, Black76Simulator, JarrowRuddTree
+from SimulatorEngine import BlackScholesSimulator, Black76Simulator, JarrowRuddTree, DupireSimulator
 from Payoffs import EuropeanCallPayOff, EuropeanPutPayOff, AsianCallPayoff, AsianPutPayoff, DigitalCallPayoff, DigitalPutPayoff, BarrierCallPayoff, BarrierPutPayoff, AmericanCallPayOff, AmericanPutPayOff, BermudanCallPayOff, BermudanPutPayOff, AutocallMultiCouponPayoff
 import numpy as np
 import scipy.stats as st
 import scipy.optimize as opt
 
-####### Europeas ########
 class EuropeanVanillaOption(OneStrikeOption):
     def __init__(self, S0, K, r, q, sigma, T, c_p):
         super().__init__(S0, K, r, q, sigma, T)
@@ -17,13 +16,13 @@ class EuropeanVanillaOption(OneStrikeOption):
         elif c_p == 'p':
             self.payoff_ = EuropeanPutPayOff(self.K_)
         else: 
-            pass #TODO: lanzar error
+            raise ValueError(f"Invalid option type '{c_p}'. Use 'c' for call or 'p' for put.")
 
         self.c_p = c_p
-        self.models = {'BS': self.priceBS, 'JarrowRuddTree': self.priceJarrowRuddTree}
+        self.models = {'BS': self.priceBS, 'JarrowRuddTree': self.priceJarrowRuddTree, 'Dupire': self.priceDupireMC}
 
     def priceBS(self, sigma=None, simulation=False, n_sims=10000):
-        if sigma != None:
+        if sigma is not None:
             d1 = (np.log(self.S0_ / self.K_) + (self.r_ - self.q_ + 0.5 * sigma**2) * self.T_) / (sigma * np.sqrt(self.T_))
             d2 = d1 - sigma * np.sqrt(self.T_)
         else:
@@ -43,14 +42,45 @@ class EuropeanVanillaOption(OneStrikeOption):
 
 
     def priceBSMC(self, sigma=None, n_sims=10000):
-        if sigma != None:
+        if sigma is not None:
             simulator = BlackScholesSimulator(self.S0_, self.r_, self.q_, sigma)
         else:
             simulator = self.simulatorBS_
 
         return self.priceMC(simulator, self.payoff_, [self.T_], n_sims=n_sims)  
+
+    def priceDupireMC(
+        self,
+        n_sims=10000,
+        simulator=None,
+        *,
+        vol_matrix=None,
+        strikes=None,
+        tenors=None,
+        r_zero=None,
+        q_zero=None,
+        vol_floor=1e-8
+    ):
+        dupire_sim = self._resolve_dupire_simulator(
+            simulator=simulator,
+            r_zero=r_zero,
+            q_zero=q_zero,
+            vol_matrix=vol_matrix,
+            strikes=strikes,
+            tenors=tenors,
+            vol_floor=vol_floor
+        )
+        return self.priceMC(
+            dupire_sim,
+            self.payoff_,
+            [self.T_],
+            n_sims=n_sims,
+            discount_curve=dupire_sim.r_zero_interps_[0]
+        )
     
     def priceJarrowRuddTree(self, sigma=None, simulation=False, deltat=1/252, n_sims=10000):
+        if sigma is None:
+            sigma = self.sigma_flat_
         if simulation:
             return self.priceJarrowRuddTreeMC(sigma=sigma, deltat=deltat, n_sims=n_sims)
         else:
@@ -58,7 +88,7 @@ class EuropeanVanillaOption(OneStrikeOption):
             return self.priceTree(simulator,[round(self.T_/deltat)], self.payoff_)
         
     def priceJarrowRuddTreeMC(self, sigma=None, deltat=1/252, n_sims=10000):
-        if sigma == None:
+        if sigma is None:
             sigma = self.sigma_flat_
         
         simulator = JarrowRuddTree(self.S0_, self.r_, self.q_, sigma, deltat=deltat)
@@ -79,12 +109,6 @@ class EuropeanPutOption(EuropeanVanillaOption):
     def __init__(self, S0, K, r, q, sigma, T):
         super().__init__(S0, K, r, q, sigma, T, c_p='p')
 
-### TODO: price con superficie de vol: en tiempo solo o en tiempo y nivel subyacente 
-    ### -> definición de simuladores y calibración
-
-##Hacer un enum o así con las griegas que se pueden devolver 
-
-######## Asiáticas ########
 class AsianOption(OneStrikeOption):
     def __init__(self, S0, K, r, q, sigma, dates, T, c_p):
         super().__init__(S0, K, r, q, sigma, T)
@@ -95,33 +119,58 @@ class AsianOption(OneStrikeOption):
         elif c_p == 'p':
             self.payoff_ = AsianPutPayoff(self.K_)
         else: 
-            pass #TODO: lanzar error
+            raise ValueError(f"Invalid option type '{c_p}'. Use 'c' for call or 'p' for put.")
 
         self.c_p = c_p
-        self.models = {'BS': self.priceBS}
+        self.models = {'BS': self.priceBS, 'Dupire': self.priceDupireMC}
 
     def priceBS(self, sigma=None, n_sims=10000):
-        #TODO: calcular con integración numérica de número de observaciones  ?
-        if sigma == None:
+        if sigma is None:
             sigma = self.sigma_flat_
         return self.priceBSMC(sigma, n_sims=n_sims)
 
     def priceBSMC(self, sigma=None, n_sims=10000):
-        if sigma != None:
+        if sigma is not None:
             simulator = BlackScholesSimulator(self.S0_, self.r_, self.q_, sigma)
         else:
             simulator = self.simulatorBS_
 
         return self.priceMC(simulator, self.payoff_, self.dates_, n_sims=n_sims)
+
+    def priceDupireMC(
+        self,
+        n_sims=10000,
+        simulator=None,
+        *,
+        vol_matrix=None,
+        strikes=None,
+        tenors=None,
+        r_zero=None,
+        q_zero=None,
+        vol_floor=1e-8
+    ):
+        dupire_sim = self._resolve_dupire_simulator(
+            simulator=simulator,
+            r_zero=r_zero,
+            q_zero=q_zero,
+            vol_matrix=vol_matrix,
+            strikes=strikes,
+            tenors=tenors,
+            vol_floor=vol_floor
+        )
+        return self.priceMC(
+            dupire_sim,
+            self.payoff_,
+            self.dates_,
+            n_sims=n_sims,
+            discount_curve=dupire_sim.r_zero_interps_[0]
+        )
     
     def maturityDiscount(self):
         return self.discount(self.T_)
     
     def discount(self, date):
         return np.exp(-self.r_*date)
-    
-    ### TODO: price con superficie de vol: en tiempo solo o en tiempo y nivel subyacente 
-    ### -> definición de simuladores y calibración
     
 class AsianCallOption(AsianOption):
     def __init__(self, S0, K, r, q, sigma, dates, T):
@@ -131,7 +180,6 @@ class AsianPutOption(AsianOption):
     def __init__(self, S0, K, r, q, sigma, dates, T):
         super().__init__(S0, K, r, q, sigma, dates, T, c_p='p')
 
-######## Digitales ########
 
 class DigitalOption(OneStrikeOption):
     def __init__(self, S0, K, r, q, sigma, T, c_p):
@@ -144,16 +192,16 @@ class DigitalOption(OneStrikeOption):
         elif c_p == 'p':
             self.payoff_ = DigitalPutPayoff(self.K_)
         else: 
-            pass #TODO: lanzar error
+            raise ValueError(f"Invalid option type '{c_p}'. Use 'c' for call or 'p' for put.")
 
         self.c_p = c_p
-        self.models = {'BS': self.priceBS}
+        self.models = {'BS': self.priceBS, 'Dupire': self.priceDupireMC}
 
     def getBSImpliedVol(self, price):
         return opt.fsolve( lambda x: (self.priceBS(sigma=x) - price)**2, 0.1)
 
     def priceBS(self, sigma=None, simulation=False, n_sims=10000):
-        if sigma == None:
+        if sigma is None:
             sigma = self.sigma_flat_
             d1 = self.d1_
             d2 = self.d2_
@@ -164,15 +212,45 @@ class DigitalOption(OneStrikeOption):
         if simulation:
             return self.priceBSMC(sigma=sigma, n_sims=n_sims)
         else:
-            return st.norm.cdf(d2) if self.c_p == 'c' else 1-st.norm.cdf(d2)
+            prob = st.norm.cdf(d2) if self.c_p == 'c' else 1 - st.norm.cdf(d2)
+            return self.maturityDiscount() * prob
 
     def priceBSMC(self, sigma=None, n_sims=10000):
-        if sigma != None:
+        if sigma is not None:
             simulator = BlackScholesSimulator(self.S0_, self.r_, self.q_, sigma)
         else:
             simulator = self.simulatorBS_
 
         return self.priceMC(simulator, self.payoff_, [self.T_], n_sims=n_sims)
+
+    def priceDupireMC(
+        self,
+        n_sims=10000,
+        simulator=None,
+        *,
+        vol_matrix=None,
+        strikes=None,
+        tenors=None,
+        r_zero=None,
+        q_zero=None,
+        vol_floor=1e-8
+    ):
+        dupire_sim = self._resolve_dupire_simulator(
+            simulator=simulator,
+            r_zero=r_zero,
+            q_zero=q_zero,
+            vol_matrix=vol_matrix,
+            strikes=strikes,
+            tenors=tenors,
+            vol_floor=vol_floor
+        )
+        return self.priceMC(
+            dupire_sim,
+            self.payoff_,
+            [self.T_],
+            n_sims=n_sims,
+            discount_curve=dupire_sim.r_zero_interps_[0]
+        )
     
     def maturityDiscount(self):
         return self.discount(self.T_)
@@ -188,7 +266,6 @@ class DigitalPutOption(DigitalOption):
     def __init__(self, S0, K, r, q, sigma, T):
         super().__init__(S0, K, r, q, sigma, T, 'p')
 
-###### BarrierOption ######
 
 class BarrierOption(OneStrikeOption):
     def __init__(self, S0, K, barrier, r, q, sigma, T, c_p, u_d, activation=True):
@@ -201,25 +278,56 @@ class BarrierOption(OneStrikeOption):
         elif c_p == 'p':
             self.payoff_ = BarrierPutPayoff(self.K_, barrier, u_d=u_d, activation=activation)
         else: 
-            pass #TODO: lanzar error
+            raise ValueError(f"Invalid option type '{c_p}'. Use 'c' for call or 'p' for put.")
 
         self.c_p = c_p
-        self.models = {'BS': self.priceBS}
+        self.models = {'BS': self.priceBS, 'Dupire': self.priceDupireMC}
 
     def priceBS(self, dates, sigma=None, n_sims=10000):
-        return self.priceBSMC(self, dates, sigma=sigma, n_sims=n_sims)
+        return self.priceBSMC(dates, sigma=sigma, n_sims=n_sims)
     
     def priceBSMC(self, dates, sigma=None, n_sims=10000):
-        ### Dates should be a list and contain maturity at last element
         if abs(dates[-1] - self.T_) > 0.001:
-            #TODO: lanzar error
-            pass
+            raise ValueError(f"Last observation date must match maturity T={self.T_}. Got {dates[-1]}.")
 
-        if sigma != None:
+        if sigma is not None:
             simulator = BlackScholesSimulator(self.S0_, self.r_, self.q_, sigma)
         else:
             simulator = self.simulatorBS_
         return self.priceMC(simulator, self.payoff_, dates, n_sims=n_sims)
+
+    def priceDupireMC(
+        self,
+        dates,
+        n_sims=10000,
+        simulator=None,
+        *,
+        vol_matrix=None,
+        strikes=None,
+        tenors=None,
+        r_zero=None,
+        q_zero=None,
+        vol_floor=1e-8
+    ):
+        if abs(dates[-1] - self.T_) > 0.001:
+            raise ValueError(f"Last observation date must match maturity T={self.T_}. Got {dates[-1]}.")
+
+        dupire_sim = self._resolve_dupire_simulator(
+            simulator=simulator,
+            r_zero=r_zero,
+            q_zero=q_zero,
+            vol_matrix=vol_matrix,
+            strikes=strikes,
+            tenors=tenors,
+            vol_floor=vol_floor
+        )
+        return self.priceMC(
+            dupire_sim,
+            self.payoff_,
+            dates,
+            n_sims=n_sims,
+            discount_curve=dupire_sim.r_zero_interps_[0]
+        )
     
     def maturityDiscount(self):
         return self.discount(self.T_)
@@ -236,9 +344,7 @@ class BarrierPutOption(BarrierOption):
     def __init__(self, S0, K, barrier, r, q, sigma, T, u_d, activation=True):
         super().__init__(S0, K, barrier, r, q, sigma, T, c_p='p', u_d=u_d, activation=activation)
 
-##### Clases ayuda ######
 
-##### Call #####
 class DownOutCallPayoff(BarrierCallOption):
     def __init__(self, S0, K, barrier, r, q, sigma, T):
         super().__init__(S0, K, barrier, r, q, sigma, T, u_d='d', activation=False)
@@ -255,7 +361,6 @@ class UpInCallPayoff(BarrierCallOption):
     def __init__(self, S0, K, barrier, r, q, sigma, T):
         super().__init__(S0, K, barrier, r, q, sigma, T, u_d='u', activation=True)
 
-##### Put #####
 class DownOutPutPayoff(BarrierPutOption):
     def __init__(self, S0, K, barrier, r, q, sigma, T):
         super().__init__(S0, K, barrier, r, q, sigma, T, u_d='d', activation=False)
@@ -272,7 +377,6 @@ class UpInPutPayoff(BarrierPutOption):
     def __init__(self, S0, K, barrier, r, q, sigma, T):
         super().__init__(S0, K, barrier, r, q, sigma, T, u_d='u', activation=True)
 
-##### Opciones vanilla sobre futuros ####
 class FutureEuropeanVanillaOption(OneStrikeOption):
     def __init__(self, F0, K, r, sigma, T, c_p):
         super().__init__(F0, K, r, 0, sigma, T)
@@ -285,13 +389,13 @@ class FutureEuropeanVanillaOption(OneStrikeOption):
         elif c_p == 'p':
             self.payoff_ = EuropeanPutPayOff(self.K_)
         else: 
-            pass #TODO: lanzar error
+            raise ValueError(f"Invalid option type '{c_p}'. Use 'c' for call or 'p' for put.")
 
         self.c_p = c_p
         self.models = {'BS': self.priceBS}
 
     def priceBS(self, sigma=None, simulation=False, n_sims=10000):
-        if sigma != None:
+        if sigma is not None:
             d1 = (np.log(self.F0_ / self.K_) + (0.5 * sigma**2) * self.T_) / (sigma * np.sqrt(self.T_))
             d2 = d1 - sigma * np.sqrt(self.T_)
         else:
@@ -311,7 +415,7 @@ class FutureEuropeanVanillaOption(OneStrikeOption):
 
 
     def priceBSMC(self, sigma=None, n_sims=10000):
-        if sigma != None:
+        if sigma is not None:
             simulator = Black76Simulator(self.F0_, sigma)
         else:
             simulator = self.simulatorBS_
@@ -332,7 +436,6 @@ class FutureEuropeanPutOption(FutureEuropeanVanillaOption):
     def __init__(self, S0, K, r, sigma, T):
         super().__init__(S0, K, r, sigma, T, c_p='p')
 
-######## Americanas #######
 
 class AmericanVanillaOption(OneStrikeOption):
     def __init__(self, S0, K, r, q, sigma, T, c_p):
@@ -342,8 +445,7 @@ class AmericanVanillaOption(OneStrikeOption):
         elif c_p=='p':
             self.payoff_ = AmericanPutPayOff(self.K_)
         else:
-            #TODO: lanzar error
-            pass
+            raise ValueError(f"Invalid option type '{c_p}'. Use 'c' for call or 'p' for put.")
 
         self.c_p = c_p
         self.models = {'JarrowRuddTree': self.priceJarrowRuddTree}
@@ -352,6 +454,8 @@ class AmericanVanillaOption(OneStrikeOption):
         return super().price(model, **kwargs)
     
     def priceJarrowRuddTree(self, sigma=None, deltat=1/252):
+        if sigma is None:
+            sigma = self.sigma_flat_
         simulator = JarrowRuddTree(self.S0_, self.r_, self.q_, sigma, deltat=deltat)
         return self.priceTree(simulator, [round(self.T_/deltat)], self.payoff_)
 
@@ -369,7 +473,6 @@ class AmericanPutOption(AmericanVanillaOption):
     def __init__(self, S0, K, r, q, sigma, T):
         super().__init__(S0, K, r, q, sigma, T, c_p='p')
 
-######## Bermuda ##########
 class BermudanVanillaOption(OneStrikeOption):
     def __init__(self, S0, K, r, q, sigma, T, dates, c_p):
         super().__init__(S0, K, r, q, sigma, T)
@@ -379,8 +482,7 @@ class BermudanVanillaOption(OneStrikeOption):
         elif c_p=='p':
             self.payoff_ = BermudanPutPayOff(self.K_, dates)
         else:
-            #TODO: lanzar error
-            pass
+            raise ValueError(f"Invalid option type '{c_p}'. Use 'c' for call or 'p' for put.")
 
         self.c_p = c_p
         self.models = {'JarrowRuddTree': self.priceJarrowRuddTree}
@@ -389,6 +491,8 @@ class BermudanVanillaOption(OneStrikeOption):
         return super().price(model, **kwargs)
     
     def priceJarrowRuddTree(self, sigma=None, deltat=1/252):
+        if sigma is None:
+            sigma = self.sigma_flat_
         simulator = JarrowRuddTree(self.S0_, self.r_, self.q_, sigma, deltat=deltat)
         return self.priceTree(simulator, [round(self.T_/deltat)], self.payoff_)
 
@@ -406,24 +510,97 @@ class BermudanPutOption(BermudanVanillaOption):
     def __init__(self, S0, K, r, q, sigma, T, dates):
         super().__init__(S0, K, r, q, sigma, T, dates, c_p='p')
 
-######## Estructurados ####
 
 class AutocallOption(EquityOption):
     def __init__(self, notional, S0, r, q, dates, dates_obs, coupons, coup_barriers, autocall_barrier, maturity_options, isAcumulative, participations, autocall_start_period=1):
         self.payoff_ = AutocallMultiCouponPayoff(notional, coupons, coup_barriers, autocall_barrier, isAcumulative, maturity_options, participations, autocall_start_period=autocall_start_period)
-        self.dates_ =dates
-        self.dates_obs_ =dates_obs
+        self.dates_ = dates
+        self.dates_obs_ = dates_obs
         self.S0_ = S0
         self.r_ = r
         self.q_ = q
         self.T_ = self.dates_[-1]
 
-        self.models = {'BS':self.priceBS}
+        self.models = {'BS': self.priceBS, 'Dupire': self.priceDupireMC}
 
     def priceBS(self, sigma, n_sims=10000):
         simulator = BlackScholesSimulator(self.S0_, self.r_, self.q_, sigma)
 
         return self.priceMC(simulator, self.payoff_, self.dates_, n_sims, dates_obs=self.dates_obs_)
+
+    def _validate_dupire_grid(self, tenors, strikes, vol_matrix):
+        tenors = np.asarray(tenors, dtype=float)
+        strikes = np.asarray(strikes, dtype=float)
+        vol_matrix = np.asarray(vol_matrix, dtype=float)
+
+        if tenors.ndim != 1 or strikes.ndim != 1:
+            raise ValueError("tenors and strikes must be 1D arrays")
+        if np.any(np.diff(tenors) <= 0):
+            raise ValueError("tenors must be strictly increasing")
+        if np.any(np.diff(strikes) <= 0):
+            raise ValueError("strikes must be strictly increasing")
+        if vol_matrix.shape != (tenors.size, strikes.size):
+            raise ValueError(
+                f"vol_matrix shape {vol_matrix.shape} does not match grid ({tenors.size}, {strikes.size})"
+            )
+
+    def _resolve_dupire_simulator(
+        self,
+        simulator=None,
+        *,
+        vol_matrix=None,
+        strikes=None,
+        tenors=None,
+        r_zero=None,
+        q_zero=None,
+        vol_floor=1e-8
+    ):
+        if simulator is not None:
+            if getattr(simulator, "state_", None) != "CALIBRATED":
+                raise ValueError("Provided Dupire simulator is not calibrated")
+            return simulator
+
+        if vol_matrix is None or strikes is None or tenors is None:
+            raise ValueError("vol_matrix, strikes, and tenors are required for Dupire calibration")
+
+        self._validate_dupire_grid(tenors, strikes, vol_matrix)
+        r_input = self.r_ if r_zero is None else r_zero
+        q_input = self.q_ if q_zero is None else q_zero
+
+        dupire_sim = DupireSimulator(self.S0_, r_input, q_input, n_assets=1)
+        dupire_sim.calibrate(vol_matrix, strikes, tenors, vol_floor=vol_floor)
+        return dupire_sim
+
+    def priceDupireMC(
+        self,
+        n_sims=10000,
+        simulator=None,
+        *,
+        vol_matrix=None,
+        strikes=None,
+        tenors=None,
+        r_zero=None,
+        q_zero=None,
+        vol_floor=1e-8
+    ):
+        dupire_sim = self._resolve_dupire_simulator(
+            simulator=simulator,
+            vol_matrix=vol_matrix,
+            strikes=strikes,
+            tenors=tenors,
+            r_zero=r_zero,
+            q_zero=q_zero,
+            vol_floor=vol_floor
+        )
+
+        return self.priceMC(
+            dupire_sim,
+            self.payoff_,
+            self.dates_,
+            n_sims,
+            dates_obs=self.dates_obs_,
+            discount_curve=dupire_sim.r_zero_interps_[0]
+        )
     
     def maturityDiscount(self):
         return self.discount(self.T_)
@@ -452,7 +629,6 @@ if __name__=='__main__':
     sigma = 0.2
     T = 1
 
-    ##### Test europeas
     op = EuropeanCallOption(spot, strike , r, q, sigma, T)
     op2 = EuropeanPutOption(spot, strike , r, q, sigma, T)
 
@@ -466,7 +642,6 @@ if __name__=='__main__':
     print(op.getImpliedVol(price))
 
 
-    ##### Test asiáticas
     dates = [1]
     aop = AsianCallOption(spot, strike , r, q, sigma, dates, T)
     aop2 = AsianPutOption(spot, strike , r, q, sigma, dates, T)
@@ -483,7 +658,6 @@ if __name__=='__main__':
     print(aop2.priceBS(n_sims=n_sims))
 
 
-    ##### Test digitales
     strike = 120
     dop = DigitalCallOption(spot, strike , r, q, sigma, T)
     dop2 = DigitalPutOption(spot, strike , r, q, sigma, T)
@@ -494,7 +668,6 @@ if __name__=='__main__':
     print(dop2.priceBS(0.2))
     print(dop2.priceBS(0.2, simulation=True, n_sims=n_sims))
 
-    ##### Test opciones sobre futuros
     strike = 120
     fop = FutureEuropeanCallOption(spot, strike, r, sigma, T)
     fop2 = FutureEuropeanPutOption(spot, strike, r, sigma, T)
@@ -505,7 +678,6 @@ if __name__=='__main__':
     print(fop2.priceBS(0.2))
     print(fop2.priceBS(0.2, simulation=True, n_sims=n_sims*3))
 
-    ##### Test barrera
     strike = 100
     barrier = 120
 
@@ -527,7 +699,6 @@ if __name__=='__main__':
     print(bop2.priceBSMC([T], n_sims=n_sims*6))
     print((strike-barrier2)*aux21.priceBS( )+aux22.priceBS())
 
-    #Test árbol
     print('JarrowRudd simulator:')
     print(JarrowRuddTree(spot, r, q, sigma, deltat=1/12).simulate(n_sims=1, dates_integer=[5]))
     
@@ -538,7 +709,6 @@ if __name__=='__main__':
     print('Valoración en árbol:')
     print(op.price(model='JarrowRuddTree', sigma=0.2, n_sims=n_sims))
 
-    #Test americanas: comprobar con un excel
     print('Valoración call americana:')
     op = EuropeanCallOption(spot, strike , r, 0, sigma, T)
     op2 = EuropeanPutOption(spot, strike , r, 0, sigma, T)
@@ -558,7 +728,6 @@ if __name__=='__main__':
 
     print('Vola implícita: ', aop2.getImpliedVol(price, model='JarrowRuddTree', deltat=1/12))
 
-    #Test bermuda
     bermop = BermudanCallOption(spot, strike, r, 0, sigma, T, [0.5])
     bermop2 = BermudanPutOption(spot, strike, r, 0, sigma, T, [0.5])
     

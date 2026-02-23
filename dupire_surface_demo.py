@@ -68,7 +68,7 @@ def main():
     sigma_bs_ref = float(iv_interp(t_test, k_test))
 
     price_bs = bs_call_price(s0=s0, k=k_test, r=r, q=q, sigma=sigma_bs_ref, t=t_test)
-    price_dupire = price_call_dupire_mc(dupire, k=k_test, t=t_test, r=r, n_sims=50000, seed=12345)
+    price_dupire = price_call_dupire_mc(dupire, k=k_test, t=t_test, r=r, n_sims=1000000, seed=12345)
 
     abs_diff = abs(price_dupire - price_bs)
     rel_diff = abs_diff / max(abs(price_bs), 1e-12)
