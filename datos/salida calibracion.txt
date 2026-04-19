@@ -1,0 +1,19 @@
+=== UnRisk single-asset calibration demo ===
+File: datos/EquityBasket_8e55875c81554f3697bd765e672c3704_20260305_170633.json
+Asset: DJ_EUROSTOXX_50
+Grid: tenors=9, strikes=17, shape=(9, 17)
+Calibration time (v2): 97.045 s
+Price MAE (model vs bs-from-market-iv): 1.003164e+01
+Price RMSE(model vs bs-from-market-iv): 1.320597e+01
+Price MAE (local-read vs bs-from-market-iv): 9.055352e+00
+Price RMSE(local-read vs bs-from-market-iv): 1.369294e+01
+IV MAE (model vs market): 1.144910e-02
+IV RMSE(model vs market): 2.174246e-02
+IV MAE (local-read vs market): 9.996519e-03
+IV RMSE(local-read vs market): 1.908373e-02
+IV MAE strict (model, pen=0.5): 5.295996e-02
+IV RMSE strict(model, pen=0.5): 1.472223e-01
+IV MAE strict (local, pen=0.5): 7.725190e-02
+IV RMSE strict(local, pen=0.5): 1.860858e-01
+IV fiables model: 91.50%
+IV fiables local-read: 86.27%
